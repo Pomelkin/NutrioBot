@@ -19,9 +19,8 @@ async def on_startup(dp):
 
 async def start_bot():
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - [%(levelname)s] - %(name)s - %(message)s')
-
     try:
-        await dp.start_polling(bot, on_startup=on_startup, skip_updates=True)
+        await dp.start_polling(bot, on_startup=on_startup)
     finally:
         await bot.session.close()
 
