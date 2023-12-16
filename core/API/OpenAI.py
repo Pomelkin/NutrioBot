@@ -6,6 +6,8 @@ import io
 import numpy as np
 import json
 import logging
+import random
+import string
 
 
 async def preprosess_image(img_stream):
@@ -21,31 +23,26 @@ async def preprosess_image(img_stream):
     return b64encoded_image
 
 
-async def get_response_from_nutritionist(base64_image, prompt=""):
-    prompt_from_user = False
-
+async def get_response_from_nutritionist(base64_image, prompt):
     try:
+        is_prompt_from_user = False
         client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-    except Exception as e:
-        logging.error(e)
-        return "Произошла ошибка доступа к серверу OpenAI, попробуйте позже"
 
-    role_vision_model = """
-    You are a personal nutritionist that help determining how many proteins, fats and carbohydrates are in the dish
-    or recognize harmful ingredients on the product label and gives recommendations about nutrition.
-    """
-
-    if not (prompt == ""):
-        prompt_from_user = True
-    else:
-        prompt = """
-        If you see product label -
-        recognize harmful ingredients on the label,
-        else if you see dish on the picture -
-        tell How many proteins, fats and carbohydrates are in the dish in the picture, just think about it and reason
+        role_vision_model = """
+        You are a personal nutritionist that help determining how many proteins, fats and carbohydrates are in the dish
+        or recognize harmful ingredients on the product label and gives recommendations about nutrition.
         """
 
-    try:
+        if not (prompt == ""):
+            is_prompt_from_user = True
+        else:
+            prompt = """
+            If you see product label -
+            recognize harmful ingredients on the label,
+            else if you see dish on the picture -
+            tell How many proteins, fats and carbohydrates are in the dish in the picture, just think about it and reason
+            """
+
         response = await client.chat.completions.create(
             model="gpt-4-vision-preview",
             messages=[
@@ -70,40 +67,36 @@ async def get_response_from_nutritionist(base64_image, prompt=""):
             ],
             max_tokens=1024,
         )
-    except Exception as e:
-        logging.error(e)
-        return "Произошла ошибка доступа к серверу OpenAI, попробуйте позже"
 
-    response_vision = response.choices[0].message.content
-    print(response_vision)
+        response_vision = response.choices[0].message.content
 
-    if prompt_from_user:
-        return response_vision
+        if is_prompt_from_user:
+            logging.info('nutritionist_answer: ready')
+            return response_vision
 
-    role_assistant = """
-    You are a nutritionists assistant that help determining how many proteins, fats and carbohydrates are in the dish
-    or recognize harmful ingredients on the product label.
-    You designed to output JSON.
-    JSON looks like {
-      "product_label": {
-        "found": 1 - for true or 0 - for false
-        "name":
-        "harmful_ingredients": here you need to write about a harmful ingredient ,
+        role_assistant = """
+        You are a nutritionists assistant who helps determining how many proteins, fats and carbohydrates are in the dish
+        or recognize harmful ingredients on the product label.
+        You designed to output JSON.
+        JSON looks like {
+          "product_label": {
+            "found": 1 - for true or 0 - for false
+            "name":
+            "harmful_ingredients": here you need to write about a harmful ingredient ,
+            }
+          "dish": {
+            "found": 1 - for true or 0 - for false
+            "name":
+            "proteins": {"per_100g": here only integers},
+            "fats": {"per_100g": here only integers},
+            "carbohydrates": {"per_100g": here only integers}
+          }
+          "recommendation": as a nutritionist
         }
-      "dish": {
-        "found": 1 - for true or 0 - for false
-        "name":
-        "proteins": {"per_100g": here only integers},
-        "fats": {"per_100g": here only integers},
-        "carbohydrates": {"per_100g": here only integers}
-      }
-      "recommendation": as a nutritionist
-    }
-    if dont see anything about the dish - use none value,the same for the product label
-    Use Russian in your answers, because you customers are only russians
-    """
+        if dont see anything about the dish - use none value,the same for the product label
+        Use Russian in your answers, because you customers are only russians
+        """
 
-    try:
         response = await client.chat.completions.create(
             model="gpt-4-1106-preview",
             response_format={"type": "json_object"},
@@ -121,37 +114,83 @@ async def get_response_from_nutritionist(base64_image, prompt=""):
                 }
             ],
         )
+        response_assistant = response.choices[0].message.content
+
     except Exception as e:
         logging.error(e)
         return "Произошла ошибка доступа к серверу OpenAI, попробуйте позже"
-
-    response_assistant = response.choices[0].message.content
-    print(response_assistant)
 
     nutritionist_answer = ""
     try:
         response = json.loads(response_assistant)
 
         if response['product_label']['found']:
-            nutritionist_answer = f"""
-          **Этикетка продукта** : {response['product_label']["name"] if response['product_label']["name"] != 'none' else 'Не удалось распознать!'}\n
-          **Вредные ингридиенты** : {response['product_label']["harmful_ingredients"] if response['product_label']["harmful_ingredients"] != 'none' else 'Не удалось распознать!'}\n\n
-    
-          **Рекомендация** : {response["recommendation"] if response["recommendation"] != 'none' else 'Не удалось распознать!'}
-          """
+            nutritionist_answer = \
+                f"*Этикетка продукта* : {response['product_label']['name'] if response['product_label']['name'] != 'none' else 'Не удалось распознать!'}\n\n" + \
+                f"*Вредные ингридиенты* : {response['product_label']['harmful_ingredients'] if response['product_label']['harmful_ingredients'] != 'none' else 'Не удалось распознать!'}\n\n" + \
+                f"*Рекомендация* : {response['recommendation'] if response['recommendation'] != 'none' else 'Не удалось распознать!'}"
+        elif response['dish']['found']:
+            nutritionist_answer = \
+                f"*Блюдо* : {response['dish']['name'] if response['dish']['name'] != 'none' else 'Не удалось распознать!'}\n\n" \
+                f"*БЖУ на 100г. продукта* :\n" + \
+                f"- _Белки_ : {str(response['dish']['proteins']['per_100g']) + 'г.' if response['dish']['proteins']['per_100g'] != 'none' else 'Не удалось распознать!'}\n" + \
+                f"- _Жиры_ : {str(response['dish']['fats']['per_100g']) + 'г.' if response['dish']['fats']['per_100g'] != 'none' else 'Не удалось распознать!'}\n" + \
+                f"- _Углеводы_ : {str(response['dish']['carbohydrates']['per_100g']) + 'г.' if response['dish']['carbohydrates']['per_100g'] != 'none' else 'Не удалось распознать!'}\n\n" + \
+                f"*Рекомендация* : {response['recommendation'] if response['recommendation'] != 'none' else 'Не удалось распознать!'}"
         else:
-            nutritionist_answer = f"""
-          **Блюдо** : {response['dish']["name"] if response['dish']["name"] != 'none' else 'Не удалось распознать!'}\n
-          **БЖУ на 100г. продукта** :
-          - *Белки* : {str(response['dish']["proteins"]['per_100g']) + 'г.' if response['dish']["proteins"]['per_100g'] != 'none' else 'Не удалось распознать!'}
-          - *Жиры* : {str(response['dish']["fats"]['per_100g']) + 'г.' if response['dish']["fats"]['per_100g'] != 'none' else 'Не удалось распознать!'}
-          - *Углеводы* : {str(response['dish']['carbohydrates']['per_100g']) + 'г.' if response['dish']['carbohydrates']['per_100g'] != 'none' else 'Не удалось распознать!'}\n
-    
-          Рекомендация: {response["recommendation"] if response["recommendation"] != 'none' else 'Не удалось распознать!'}
-          """
+            nutritionist_answer = "Хммм, я не смог увидеть этикетку продукта или блюдо.\n_Попробуйте еще раз_ !"
+
     except Exception as e:
         logging.error(e)
-        nutritionist_answer = "Не удалось распознать, попробуйте еще раз."
+        nutritionist_answer = "Что-то пошло не по плану...\n_Попробуйте еще раз_ !"
 
-    print(nutritionist_answer)
     return nutritionist_answer
+
+
+async def get_recipe_from_nutritionist(audio_path):
+    try:
+        client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+
+        audio_file = open(audio_path, "rb")
+        transcript = await client.audio.transcriptions.create(
+            model="whisper-1",
+            file=audio_file,
+            prompt="You need to transcript a products from the speech",
+            response_format="text"
+        )
+
+        role_assistant = """
+        You are a nutritionist who analyzes transcriptions from the client's speech and helps to prepare a healthy lifestyle dish from the client's products. In your answers use the language that is in the transcription
+        """
+
+        response = await client.chat.completions.create(
+            model="gpt-4-1106-preview",
+            messages=[
+                {
+                    "role": "system",
+                    "content": role_assistant
+                },
+                {
+                    "role": "user",
+                    "content":
+                        f"""
+              You need to process the response from the whisper model. The response: {transcript}. In your recipe you can use not all client's products. In your answer use the language that is in the transcription
+              """
+                }
+            ],
+        )
+
+        response_assistant = response.choices[0].message.content
+        filename = ''.join(random.choices(string.ascii_lowercase + string.digits, k=32))
+        speech_file_path = "temp/" + filename + ".mp3"
+        response = await client.audio.speech.create(
+            model="tts-1",
+            voice="nova",
+            input=response_assistant
+        )
+        await response.astream_to_file(speech_file_path)
+        return speech_file_path
+
+    except Exception as e:
+        logging.error(e)
+        return ""
